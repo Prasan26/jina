@@ -91,6 +91,7 @@ class HubIO:
         """Push the executor pacakge to Jina Hub."""
         with ImportExtensions(required=True):
             import requests
+            from cryptography.fernet import Fernet
 
         pkg_path = Path(self.args.path)
         if not pkg_path.exists():
@@ -100,20 +101,22 @@ class HubIO:
         pkg_config_path = pkg_path / '.jina'
         pkg_config_path.mkdir(parents=True, exist_ok=True)
 
-        local_id_file = pkg_config_path / 'local_id'
+        local_id_file = pkg_config_path / 'secret.key'
         local_id = None
         uuid8 = None
         secret = None
         if local_id_file.exists():
             with local_id_file.open() as f:
-                local_id = f.readline().strip()
+                local_id, local_key = f.readline().strip().split('\t')
+                fernet = Fernet(local_key.encode())
 
             local_config_file = JINA_HUB_ROOT / f'{local_id}.json'
             if local_config_file.exists():
                 with local_config_file.open() as f:
                     local_config = json.load(f)
                     uuid8 = local_config.get('uuid8', None)
-                    secret = local_config.get('secret', None)
+                    encrypted_secret = local_config.get('encrypted_secret', None)
+                    secret = fernet.decrypt(encrypted_secret.encode())
 
         request_headers = self._get_request_header()
 
@@ -163,12 +166,20 @@ class HubIO:
 
                 if not local_id_file.exists():
                     local_id = str(random_identity())
+                    local_key = Fernet.generate_key()
                     with local_id_file.open('w') as f:
-                        f.write(local_id)
+                        f.write(f'{local_id}\t{local_key.decode()}')
+                    fernet = Fernet(local_key)
+
                 local_config_file = JINA_HUB_ROOT / f'{local_id}.json'
                 if not local_config_file.exists():
+                    encrypted_secret = fernet.encrypt(secret.encode()).decode()
                     with local_config_file.open('w') as f:
-                        f.write(json.dumps({'uuid8': uuid8, 'secret': secret}))
+                        f.write(
+                            json.dumps(
+                                {'uuid8': uuid8, 'encrypted_secret': encrypted_secret}
+                            )
+                        )
 
                 usage = (
                     f'jinahub://{uuid8}'
